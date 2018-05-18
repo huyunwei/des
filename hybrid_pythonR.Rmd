@@ -1,0 +1,61 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. Will try use `reticulate` package to use both python and R in the same notebook.  
+
+
+
+The SimPy is the Python package for Discrete Event Simulation. `Reticulate` makes it possible to source the python script and run simulation in R notebook. 
+
+```{r}
+library(tidyverse)
+library(reticulate)
+use_python("/Users/myhome/anaconda/bin/python")
+source_python("simNHPP.py")
+```
+
+```{r}
+events <- simNHPP(500)
+
+```
+Add loop? 
+Will vectorize later.
+
+```{r}
+n_runs = 1000
+SIM_TIME = 500
+ptm <- proc.time()
+events = tibble(event_type = character(), event_time = numeric(), n_run = integer())
+for (i in 1:n_runs){
+  # print(paste("run #", as.character(i)))
+  ev <- cbind(simNHPP(SIM_TIME), tibble(n_run = i))
+  events = rbind(events, as.matrix(ev))
+}
+for_time <- proc.time() - ptm
+print(for_time)
+```
+## purrr:map
+Use purr:map to get rid of for=loop.
+
+```{r}
+ptm <- proc.time()
+ev <- 1:10 %>% 
+  map_df(function(x) cbind(simNHPP(SIM_TIME), tibble(n_run = x)))
+map_time <- proc.time() - ptm
+print(map_time)
+```
+
+# Dump
+```{r}
+### Skip Block
+### Used when event_log was a python list.
+elist2tibble <- function (event_list){
+  y <-  matrix(unlist(event_list), byrow = T, length(event_list) / 2, 2)
+  colnames(y) <- c("event_type", "event_time")
+  y <- y %>% 
+    as_tibble() %>% 
+    mutate(event_time = as.numeric(event_time)) 
+}
+```

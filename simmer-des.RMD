@@ -1,0 +1,139 @@
+---
+title: "Simmer DES"
+output: html_notebook
+---
+
+This is a Simmer model based on the SIMMER "Machine Shop" example
+
+```{r}
+library(tidyverse)
+library(simmer)
+library(simmer.plot)
+```
+
+# Machine Shop Example
+
+This example comprises a workshop with n identical machines. The workshop works continuously and each machine breaks down randomly. Repairs are carried out by one repairman. The repairman is always available. The repairman continues them when he is done with the machine repair. .
+
+## Prepare the environment.
+
+```{r}
+PT_MEAN <- 10.0         # Avg. processing time in minutes
+PT_SIGMA <- 2.0         # Sigma of processing time
+MTTF <- 300.0           # Mean time to failure in minutes
+BREAK_MEAN <- 1 / MTTF  # Param. for exponential distribution
+REPAIR_TIME <- 30.0     # Time it takes to repair a machine in minutes
+JOB_DURATION <- 30.0    # Duration of other jobs in minutes
+NUM_MACHINES <- 10      # Number of machines in the machine shop
+WEEKS <- 4              # Simulation time in weeks
+SIM_TIME <- WEEKS * 7 * 24 * 60  # Simulation time in minutes
+# setup
+set.seed(42)
+env <- simmer()
+```
+The make_parts trajectory defines a machine’s operating loop. We parametrise the trajectory as a function of the machine:
+```{r}
+make_parts <- function(machine)
+  trajectory() %>%
+    set_attribute("parts", 0) %>%
+    seize(machine, 1) %>%
+    timeout(function() rnorm(1, PT_MEAN, PT_SIGMA)) %>%
+    set_attribute("parts", 1, mod="+") %>%
+    rollback(2, Inf) # go to 'timeout' over and over
+```
+Repairman’s unimportant jobs may be modelled in the same way (without the accounting part):
+```{r}
+other_jobs <- trajectory() %>%
+  seize("repairman", 1) %>%
+  timeout(JOB_DURATION) %>%
+  rollback(1, Inf)
+```
+Failures are high-priority arrivals, both for the machines and for the repairman. Each random generated failure will randomly select and seize (break) a machine, and will seize (call) the repairman. After the machine is repaired, both resources are released and the corresponding workers begin where they left.
+
+```{r}
+machines <- paste0("machine", 1:NUM_MACHINES-1)
+
+failure <- trajectory() %>%
+  select(machines, policy = "random") %>%
+  seize_selected(1) %>%
+  seize("repairman", 1) %>%
+  timeout(REPAIR_TIME) %>%
+  release("repairman", 1) %>%
+  release_selected(1)
+```
+The machines and their workers are appended to the simulation environment. Note that each machine, which is defined as preemptive, has space for one worker (or a failure) and no space in queue.
+```{r}
+for (i in machines) env %>%
+  add_resource(i, 1, 0, preemptive = TRUE) %>%
+  add_generator(paste0(i, "_worker"), make_parts(i), at(0), mon = 2)
+```
+The same for the repairman, but this time the queue is infinite, since there could be any number of machines at any time waiting for repairments.
+```{r}
+env %>%
+  add_resource("repairman", capacity = 1, queue_size = Inf, mon = TRUE, preemptive = TRUE) %>%
+  add_generator("repairman_worker", other_jobs, at(0)) %>%
+  invisible
+```
+Finally, the failure generator is defined with priority=1 (default: 0), and the simulation begins:
+```{r}
+env %>%
+  add_generator("failure", failure, 
+                function() rexp(1, BREAK_MEAN * NUM_MACHINES), 
+                priority = 1) %>%
+  run(SIM_TIME) %>% invisible
+```
+The last value per worker from the attributes table reports the number of parts made:
+```{r}
+get_mon_attributes(env) %>%
+  dplyr::group_by(name) %>%
+  dplyr::slice(n()) %>%
+  dplyr::arrange(name)
+```
+## Machine Shop
+
+```{r}
+machine <- function(mttf, repair_time){
+  machie <- trajectory() %>% 
+    set_attribute("n_fail", 0) %>% 
+    timeout(function() rexp(1, 1/mttf)) %>% 
+    log_("fail") %>% 
+    set_attribute("n_fail", 1, mod="+") %>%
+    seize("repairman") %>% 
+    timeout(repair_time) %>% 
+    release("repairman") %>% 
+    rollback(6)
+}
+plot(machine(10,1))
+```
+
+```{r}
+env <- simmer() %>% 
+  # use resource to track system state
+  # all items in series will require same "repair" resource. 
+  # set capacity to inf, assuming no queue for repair
+  # if repair resource busy -> system down
+  # for n-oo-k items, if resource server > k-n ->system down 
+  add_resource("repairman", capacity = Inf) %>% 
+  add_generator("machine_a", machine(10,1), at(0), mon = 2) %>% 
+  add_generator("machine_b", machine(100,1), at(0), mon = 2) %>% 
+  run(100)
+
+n_fail <- get_mon_attributes(env)
+repair_log <- get_mon_resources(env)
+plot(repair_log, metric = "usage", "repairman", items = "server", steps = TRUE)
+
+
+repair_log <- repair_log %>% 
+  mutate(duration = c(diff(time),0)) %>% 
+  # assuming series, any item down -> system down
+  mutate(sys_up = if_else(server > 0, 0, 1) ) %>%
+  dplyr::rename(state_start = time) 
+
+downtime <- repair_log %>% 
+  group_by(sys_up) %>% 
+  summarise(duration = sum(duration)) 
+
+
+
+```
+

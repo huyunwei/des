@@ -1,2 +1,2 @@
-# des
-Discrete Event Simulation
+# risk_models
+models for risk analysis

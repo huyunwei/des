@@ -4,3 +4,4 @@
 .Ruserdata
 Thumbs.db
 .ipynb_checkpoints
+*.html
